@@ -1,0 +1,32 @@
+# AI 订阅监控配置
+# 所有服务（OpenAI, Gemini, Claude, Cursor）均支持自动从本地凭证在线获取用量
+# 此处的 manual 配置主要用于 API 获取失败时的备用显示，或添加自定义备注
+
+manual:
+  # OpenAI (ChatGPT Plus) - 自动获取
+  # 控制台：https://chat.openai.com/settings/usage
+  openai:
+    usage_text: ""       # 留空自动获取。API 失败时可填：已用 45 / 50 次
+    reset_time: ""       # 留空自动获取。API 失败时可填：每月 5 号
+    limit_note: "Plus 订阅"
+
+  # Google Gemini - 自动获取
+  # 控制台：https://gemini.google.com
+  gemini:
+    usage_text: ""       # 留空自动获取。
+    reset_time: ""       # 留空自动获取。
+    limit_note: "Advanced 订阅"
+
+  # Claude (Pro) - 自动获取
+  # 控制台：https://console.anthropic.com/settings/usage
+  claude:
+    usage_text: ""       # 留空自动获取 5h/7d 窗口用量
+    reset_time: ""       
+    limit_note: "Pro: 5h/7d 滑动窗口限额"
+
+  # Cursor (Pro/Business) - 自动获取
+  # 控制台：https://cursor.com/settings
+  cursor:
+    usage_text: ""       # 留空自动获取快速请求配额
+    reset_time: ""       # 自动获取账单周期
+    limit_note: "Pro: 快速请求/月"

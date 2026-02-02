@@ -1,0 +1,8 @@
+node_modules
+dist
+legacy_python
+.DS_Store
+*.log
+config.yaml
+.env
+.env.local

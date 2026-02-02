@@ -1,0 +1,44 @@
+{
+  "name": "ai-subscription-monitor",
+  "version": "1.0.0",
+  "description": "Monitor AI subscription usage for OpenAI, Gemini, Claude, and Cursor",
+  "main": "dist/index.js",
+  "type": "module",
+  "bin": {
+    "ai-sub": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node --import tsx src/index.ts",
+    "dev": "node --import tsx src/index.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "ai",
+    "subscription",
+    "monitor",
+    "openai",
+    "gemini",
+    "claude",
+    "cursor"
+  ],
+  "files": [
+    "dist",
+    "config.example.yaml",
+    "README.md"
+  ],
+  "dependencies": {
+    "axios": "^1.7.9",
+    "boxen": "^8.0.1",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "js-yaml": "^4.1.0",
+    "string-width": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.13.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.7.3"
+  }
+}

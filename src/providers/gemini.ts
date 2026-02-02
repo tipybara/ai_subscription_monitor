@@ -1,0 +1,237 @@
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { getCliStatus } from '../cli_runner.js';
+import { ProviderBase, SubscriptionInfo } from './base.js';
+
+const GEMINI_DASHBOARD = "https://gemini.google.com";
+const GEMINI_API_BASE = "https://cloudcode-pa.googleapis.com";
+
+const CLIENT_ID = process.env.GEMINI_CLIENT_ID || '';
+const CLIENT_SECRET = process.env.GEMINI_CLIENT_SECRET || '';
+
+function getXdgConfigHome(): string {
+  return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+}
+
+function getCredsPath() {
+  return path.join(getXdgConfigHome(), 'ai_subscription_monitor', 'gemini_oauth_creds.json');
+}
+
+function getLegacyCredsPath() {
+  return path.join(os.homedir(), '.gemini', 'oauth_creds.json');
+}
+
+function migrateFromLegacy(): boolean {
+  try {
+    const legacyPath = getLegacyCredsPath();
+    const newPath = getCredsPath();
+    
+    if (fs.existsSync(newPath)) return false;
+    if (!fs.existsSync(legacyPath)) return false;
+    
+    const data = fs.readFileSync(legacyPath, 'utf8');
+    fs.mkdirSync(path.dirname(newPath), { recursive: true });
+    fs.writeFileSync(newPath, data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readGeminiCreds(): any {
+  try {
+    migrateFromLegacy();
+    
+    const p = getCredsPath();
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function saveGeminiCreds(data: any) {
+  try {
+    const current = readGeminiCreds() || {};
+    Object.assign(current, data);
+    const p = getCredsPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(current, null, 2));
+  } catch {
+    // ignore
+  }
+}
+
+async function refreshAccessToken(refreshToken: string) {
+  if (!CLIENT_ID || !CLIENT_SECRET) return null;
+  try {
+    const resp = await axios.post("https://oauth2.googleapis.com/token", {
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token"
+    }, { timeout: 10000 });
+    return resp.data;
+  } catch {
+    return null;
+  }
+}
+
+async function getProjectId(token: string): Promise<{ projectId: string | null; isAuthError: boolean }> {
+  try {
+    const resp = await axios.post(
+      `${GEMINI_API_BASE}/v1internal:loadCodeAssist`,
+      { metadata: {} },
+      {
+        headers: { "Authorization": `Bearer ${token}` },
+        timeout: 10000
+      }
+    );
+    return { projectId: resp.data.cloudaicompanionProject, isAuthError: false };
+  } catch (e: any) {
+    if (e.response?.status === 401) return { projectId: null, isAuthError: true };
+    return { projectId: null, isAuthError: false };
+  }
+}
+
+async function getQuota(token: string, projectId: string) {
+  try {
+    const resp = await axios.post(
+      `${GEMINI_API_BASE}/v1internal:retrieveUserQuota`,
+      { project: projectId },
+      {
+        headers: { "Authorization": `Bearer ${token}` },
+        timeout: 10000
+      }
+    );
+    return resp.data.buckets || [];
+  } catch {
+    return null;
+  }
+}
+
+function formatQuota(buckets: any[]): { usage: string; resetTime: string } {
+  const parts: string[] = [];
+  let earliestReset = "";
+  
+  // Sort by modelId
+  buckets.sort((a, b) => (a.modelId || "").localeCompare(b.modelId || ""));
+
+  const maxLen = buckets.reduce((max, b) => Math.max(max, (b.modelId || "unknown").length), 0);
+
+  for (const b of buckets) {
+    const model = b.modelId || "unknown";
+    const remainingFrac = b.remainingFraction;
+    const resetTime = b.resetTime;
+
+    if (remainingFrac !== undefined && remainingFrac !== null) {
+      const usedPct = (1 - remainingFrac) * 100;
+      const padding = " ".repeat(Math.max(0, maxLen - model.length));
+      parts.push(`${model}${padding} : ${usedPct.toFixed(1)}% 已用`);
+    }
+
+    if (resetTime) {
+      if (!earliestReset || resetTime < earliestReset) {
+        earliestReset = resetTime;
+      }
+    }
+  }
+
+  let resetStr = "";
+  if (earliestReset) {
+      try {
+          const dt = new Date(earliestReset);
+           // Format: MM-dd HH:mm UTC+8
+          const m = (dt.getMonth() + 1).toString().padStart(2, '0');
+          const d = dt.getDate().toString().padStart(2, '0');
+          const h = dt.getHours().toString().padStart(2, '0');
+          const min = dt.getMinutes().toString().padStart(2, '0');
+          const offset = -dt.getTimezoneOffset() / 60;
+          const sign = offset >= 0 ? '+' : '-';
+          const zone = `${sign}${Math.abs(offset).toString().padStart(2, '0')}`;
+          
+          resetStr = `重置: ${m}-${d} ${h}:${min} ${zone}`;
+      } catch {
+          resetStr = `重置: ${earliestReset.substring(0, 16)}`;
+      }
+  }
+
+  return { usage: parts.join("\n"), resetTime: resetStr };
+}
+
+export class GeminiProvider extends ProviderBase {
+  name = "Google Gemini";
+  dashboard_url = GEMINI_DASHBOARD;
+  cli_name = "gemini";
+
+  async fetch(): Promise<SubscriptionInfo> {
+    const status = await getCliStatus(this.cli_name);
+    let error: string | undefined;
+    let usage = "";
+    let resetTime = "";
+
+    const missingOauth = !CLIENT_ID || !CLIENT_SECRET;
+
+    const creds = readGeminiCreds();
+    if (creds) {
+      let token = creds.access_token;
+      let refreshToken = creds.refresh_token;
+
+      let { projectId, isAuthError } = token ? await getProjectId(token) : { projectId: null, isAuthError: true };
+
+      if ((isAuthError || !token) && refreshToken) {
+          const newTokens = await refreshAccessToken(refreshToken);
+          if (newTokens) {
+              saveGeminiCreds(newTokens);
+              token = newTokens.access_token;
+              const res = await getProjectId(token);
+              projectId = res.projectId;
+              isAuthError = res.isAuthError;
+          }
+      }
+
+      if (projectId && token) {
+          const buckets = await getQuota(token, projectId);
+          if (buckets) {
+              const res = formatQuota(buckets);
+              usage = res.usage;
+              resetTime = res.resetTime;
+          } else {
+              error = "获取用量失败";
+          }
+      } else if (isAuthError) {
+          error = "认证失败 (无法刷新 token)";
+      } else {
+          error = "获取 project ID 失败";
+      }
+    } else {
+        if (missingOauth) {
+          error = "缺少 GEMINI_CLIENT_ID / GEMINI_CLIENT_SECRET";
+        } else {
+          const expectedPath = getCredsPath();
+          error = `未找到 ${expectedPath}`;
+        }
+    }
+
+    if (!usage) {
+        usage = this.manual.usage_text || "";
+    }
+    if (!resetTime) {
+        resetTime = this.manual.reset_time || "滑动窗口";
+    }
+
+    const statusLine = status || "未检测到 gemini CLI";
+    const fullUsage = usage ? `${statusLine}\n${usage}` : statusLine;
+
+    return {
+      name: this.name,
+      usage_text: fullUsage.trim() || "—",
+      reset_time: resetTime,
+      limit_note: this.manual.limit_note || "",
+      dashboard_url: this.dashboard_url,
+      error
+    };
+  }
+}
