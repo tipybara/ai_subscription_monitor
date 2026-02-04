@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { getCliStatus } from '../cli_runner.js';
 import { ProviderBase, SubscriptionInfo } from './base.js';
+import { parseJwt } from '../utils.js';
 
 const GEMINI_DASHBOARD = "https://gemini.google.com";
 const GEMINI_API_BASE = "https://cloudcode-pa.googleapis.com";
@@ -173,7 +174,7 @@ export class GeminiProvider extends ProviderBase {
   cli_name = "gemini";
 
   async fetch(): Promise<SubscriptionInfo> {
-    const status = await getCliStatus(this.cli_name);
+    let status = await getCliStatus(this.cli_name);
     let error: string | undefined;
     let usage = "";
     let resetTime = "";
@@ -182,6 +183,20 @@ export class GeminiProvider extends ProviderBase {
 
     const creds = readGeminiCreds();
     if (creds) {
+      // Extract email from id_token
+      let email: string | null = null;
+      if (creds.id_token) {
+        const decoded = parseJwt(creds.id_token);
+        if (decoded && decoded.email) {
+          email = decoded.email;
+        }
+      }
+      
+      // Update status with email
+      if (email) {
+        status = `Logged in (${email})`;
+      }
+      
       let token = creds.access_token;
       let refreshToken = creds.refresh_token;
 
@@ -208,7 +223,11 @@ export class GeminiProvider extends ProviderBase {
               error = "Failed to fetch usage";
           }
       } else if (isAuthError) {
-          error = "Authentication failed (cannot refresh token)";
+          if (missingOauth) {
+            error = "Token expired. Please run 'gemini' CLI to refresh.";
+          } else {
+            error = "Authentication failed (cannot refresh token)";
+          }
       } else {
           error = "Failed to get project ID";
       }

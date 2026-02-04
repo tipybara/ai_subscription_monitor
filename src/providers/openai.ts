@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { getCliStatus } from '../cli_runner.js';
 import { ProviderBase, SubscriptionInfo } from './base.js';
+import { parseJwt } from '../utils.js';
 
 const OPENAI_DASHBOARD = "https://chatgpt.com/codex/settings/usage";
 
@@ -36,19 +37,29 @@ function migrateFromLegacy(): boolean {
   }
 }
 
-function readCodexAuth(): { token: string | null; accountId: string | null } {
+function readCodexAuth(): { token: string | null; accountId: string | null; email: string | null } {
   try {
     migrateFromLegacy();
     
     const authPath = getAuthPath();
-    if (!fs.existsSync(authPath)) return { token: null, accountId: null };
+    if (!fs.existsSync(authPath)) return { token: null, accountId: null, email: null };
     
     const content = fs.readFileSync(authPath, 'utf8');
     const data = JSON.parse(content);
     const tokens = data.tokens || {};
-    return { token: tokens.access_token || null, accountId: tokens.account_id || null };
+    const token = tokens.access_token || null;
+    let email: string | null = null;
+    
+    if (tokens.id_token) {
+        const decoded = parseJwt(tokens.id_token);
+        if (decoded && decoded.email) {
+            email = decoded.email;
+        }
+    }
+    
+    return { token, accountId: tokens.account_id || null, email };
   } catch {
-    return { token: null, accountId: null };
+    return { token: null, accountId: null, email: null };
   }
 }
 
@@ -110,7 +121,7 @@ function formatOpenAI(data: any): string {
       
       let resetStr = "";
       if (resetAt) {
-          resetStr = `  Reset: ${formatReset(resetAt, 'hm')}`;
+          resetStr = `  Reset: ${formatReset(resetAt, 'mdhm')}`;
       }
       parts.push(`${label} Limit: ${pct}%${resetStr}`);
   }
@@ -139,12 +150,16 @@ export class OpenAIProvider extends ProviderBase {
   cli_name = "codex";
 
   async fetch(): Promise<SubscriptionInfo> {
-    const status = await getCliStatus(this.cli_name);
+    let status = await getCliStatus(this.cli_name);
     let error: string | undefined;
     let usage = "";
     
-    const { token, accountId } = readCodexAuth();
+    const { token, accountId, email } = readCodexAuth();
     if (token && accountId) {
+        if (email) {
+            status = `Logged in (${email})`;
+        }
+        
         const data = await fetchOpenAIUsage(token, accountId);
         if (data) {
             usage = formatOpenAI(data);

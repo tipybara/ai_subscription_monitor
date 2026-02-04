@@ -53,6 +53,28 @@ async function fetchUsage(token: string): Promise<{ data: any; isAuthError: bool
   }
 }
 
+async function fetchProfile(token: string): Promise<{ email: string | null; plan: string | null }> {
+  try {
+    const resp = await axios.get("https://api.anthropic.com/api/oauth/profile", {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "ai-subscription-monitor/0.1",
+        "anthropic-beta": "oauth-2025-04-20"
+      },
+      timeout: 10000
+    });
+    const account = resp.data?.account || {};
+    const org = resp.data?.organization || {};
+    return { 
+      email: account.email || null, 
+      plan: org.organization_type || null 
+    };
+  } catch {
+    return { email: null, plan: null };
+  }
+}
+
 function formatUsage(data: any): string {
   const parts: string[] = [];
   const windows = [
@@ -111,6 +133,8 @@ export class AnthropicProvider extends ProviderBase {
     let creds = await readClaudeCredentials();
     
     if (creds) {
+      // Fetch profile to get email and plan
+      const profile = await fetchProfile(creds.accessToken);
       const subType = creds.subscriptionType || "unknown";
       const subMap: Record<string, string> = {
         "pro": "Claude Pro",
@@ -118,7 +142,12 @@ export class AnthropicProvider extends ProviderBase {
         "team": "Claude Team"
       };
       const planName = subMap[subType] || subType;
-      statusLine = `Logged in (${planName})`;
+      
+      if (profile.email) {
+        statusLine = `Logged in (${profile.email} - ${planName})`;
+      } else {
+        statusLine = `Logged in (${planName})`;
+      }
       
       const result = await fetchUsage(creds.accessToken);
       

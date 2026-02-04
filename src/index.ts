@@ -132,7 +132,7 @@ function renderPanel(info: SubscriptionInfo): string {
                 row += ' '.repeat(maxLabelWidth + 2);
             }
             
-            row += renderBar(pct / 100);
+            row += renderBar(pct / 100, 4);
             if (rest) {
                 row += chalk.dim(`  ${rest}`);
             }
