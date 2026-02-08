@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import stringWidth from 'string-width';
 import chalk from 'chalk';
@@ -17,6 +17,79 @@ export async function execCommand(command: string, timeout = 5000): Promise<{ st
       };
     }
     return { stdout: '', stderr: error.message || '' };
+  }
+}
+
+export async function runInteractiveCommand(
+  command: string,
+  timeout = 120000
+): Promise<{ exitCode: number | null; timedOut: boolean }> {
+  return await new Promise((resolve) => {
+    let settled = false;
+    const child = spawn(command, {
+      shell: true,
+      stdio: 'inherit',
+    });
+
+    const finish = (exitCode: number | null, timedOut: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ exitCode, timedOut });
+    };
+
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish(null, true);
+    }, timeout);
+
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      finish(code, false);
+    });
+
+    child.on('error', () => {
+      clearTimeout(timer);
+      finish(1, false);
+    });
+  });
+}
+
+export function runDetachedCommand(command: string): boolean {
+  try {
+    if (process.platform === 'darwin') {
+      const escaped = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const script = `tell application "Terminal" to activate\ntell application "Terminal" to do script "${escaped}"\nend tell`;
+      const child = spawn('osascript', ['-e', script], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+      return true;
+    }
+
+    const child = spawn(command, {
+      shell: true,
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function runBackgroundCommand(command: string): boolean {
+  try {
+    const child = spawn(command, {
+      shell: true,
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -4,10 +4,12 @@ import path from 'path';
 import os from 'os';
 import { getCliStatus } from '../cli_runner.js';
 import { ProviderBase, SubscriptionInfo } from './base.js';
-import { parseJwt } from '../utils.js';
+import { parseJwt, runBackgroundCommand } from '../utils.js';
 
 const GEMINI_DASHBOARD = "https://gemini.google.com";
 const GEMINI_API_BASE = "https://cloudcode-pa.googleapis.com";
+const LOGIN_COOLDOWN_MS = 120000;
+let lastLoginLaunchAt = 0;
 
 const CLIENT_ID = process.env.GEMINI_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GEMINI_CLIENT_SECRET || '';
@@ -178,6 +180,7 @@ export class GeminiProvider extends ProviderBase {
     let error: string | undefined;
     let usage = "";
     let resetTime = "";
+    let authInProgress = false;
 
     const missingOauth = !CLIENT_ID || !CLIENT_SECRET;
 
@@ -223,20 +226,69 @@ export class GeminiProvider extends ProviderBase {
               error = "Failed to fetch usage";
           }
       } else if (isAuthError) {
-          if (missingOauth) {
-            error = "Token expired. Please run 'gemini' CLI to refresh.";
-          } else {
-            error = "Authentication failed (cannot refresh token)";
+          // 自动登录流程
+          console.log(`[${this.name}] Token 失效，尝试自动登录...`);
+          const loginSuccess = await this.autoLogin();
+          if (loginSuccess) {
+              // 登录成功后重新读取凭证并获取数据
+              const newCreds = readGeminiCreds();
+              if (newCreds?.access_token) {
+                  const res = await getProjectId(newCreds.access_token);
+                  if (res.projectId) {
+                      const buckets = await getQuota(newCreds.access_token, res.projectId);
+                      if (buckets) {
+                          const formatted = formatQuota(buckets);
+                          usage = formatted.usage;
+                          resetTime = formatted.resetTime;
+                          error = undefined;
+                      }
+                  }
+              }
+          }
+          if (!usage) {
+              if (loginSuccess) {
+                authInProgress = true;
+                status = email ? `Re-auth in progress (${email})` : 'Re-auth in progress';
+                error = "Authentication expired. Auto refresh triggered in background; waiting next refresh.";
+              } else if (missingOauth) {
+                error = "Token expired. Please run 'gemini' CLI to refresh.";
+              } else {
+                error = "Authentication failed (cannot refresh token)";
+              }
           }
       } else {
           error = "Failed to get project ID";
       }
     } else {
-        if (missingOauth) {
-          error = "Missing GEMINI_CLIENT_ID / GEMINI_CLIENT_SECRET";
-        } else {
-          const expectedPath = getCredsPath();
-          error = `Not found: ${expectedPath}`;
+        // 没有凭证，尝试自动登录
+        console.log(`[${this.name}] 未检测到登录凭证，尝试自动登录...`);
+        const loginSuccess = await this.autoLogin();
+        if (loginSuccess) {
+            const newCreds = readGeminiCreds();
+            if (newCreds?.access_token) {
+                const res = await getProjectId(newCreds.access_token);
+                if (res.projectId) {
+                    const buckets = await getQuota(newCreds.access_token, res.projectId);
+                    if (buckets) {
+                        const formatted = formatQuota(buckets);
+                        usage = formatted.usage;
+                        resetTime = formatted.resetTime;
+                        error = undefined;
+                    }
+                }
+            }
+        }
+        if (!usage) {
+            if (loginSuccess) {
+              authInProgress = true;
+              status = 'Re-auth in progress';
+              error = "Auto refresh triggered in background; waiting next refresh.";
+            } else if (missingOauth) {
+              error = "Missing GEMINI_CLIENT_ID / GEMINI_CLIENT_SECRET";
+            } else {
+              const expectedPath = getCredsPath();
+              error = `Not found: ${expectedPath}`;
+            }
         }
     }
 
@@ -247,7 +299,7 @@ export class GeminiProvider extends ProviderBase {
         resetTime = this.manual.reset_time || "Sliding window";
     }
 
-    const statusLine = status || "Gemini CLI not detected";
+    const statusLine = status || (authInProgress ? 'Re-auth in progress' : "Gemini CLI not detected");
     const fullUsage = usage ? `${statusLine}\n${usage}` : statusLine;
 
     return {
@@ -258,5 +310,28 @@ export class GeminiProvider extends ProviderBase {
       dashboard_url: this.dashboard_url,
       error
     };
+  }
+
+  async autoLogin(): Promise<boolean> {
+    if (Date.now() - lastLoginLaunchAt < LOGIN_COOLDOWN_MS) {
+      console.log(`[${this.name}] 登录流程已在后台启动，等待完成`);
+      return true;
+    }
+
+    console.log(`[${this.name}] 正在后台启动自动登录流程...`);
+    try {
+      const started = runBackgroundCommand('gemini -p "ping" --output-format json >/dev/null 2>&1');
+      if (started) {
+        lastLoginLaunchAt = Date.now();
+        console.log(`[${this.name}] 已在后台触发 gemini 刷新`);
+        return true;
+      }
+
+      console.error(`[${this.name}] 自动登录失败 (无法启动登录命令)`);
+      return false;
+    } catch (error: any) {
+      console.error(`[${this.name}] 自动登录出错: ${error.message || error}`);
+      return false;
+    }
   }
 }

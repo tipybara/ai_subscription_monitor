@@ -184,4 +184,10 @@ export class OpenAIProvider extends ProviderBase {
       error
     };
   }
+
+  async autoLogin(): Promise<boolean> {
+    // OpenAI/Codex 使用浏览器 OAuth 登录，不支持命令行自动登录
+    console.log(`[${this.name}] 请手动运行 'codex login' 命令登录`);
+    return false;
+  }
 }

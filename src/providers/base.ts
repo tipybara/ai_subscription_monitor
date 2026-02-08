@@ -21,4 +21,10 @@ export abstract class ProviderBase {
   }
 
   abstract fetch(): Promise<SubscriptionInfo>;
+  
+  /**
+   * Automatically run login flow when authentication fails
+   * @returns Promise<boolean> - true if login succeeded, false otherwise
+   */
+  abstract autoLogin(): Promise<boolean>;
 }

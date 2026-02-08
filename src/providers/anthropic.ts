@@ -1,8 +1,11 @@
 import axios from 'axios';
 import { ProviderBase, SubscriptionInfo } from './base.js';
 import { getKeychainPassword } from '../keychain_cache.js';
+import { runDetachedCommand } from '../utils.js';
 
 const ANTHROPIC_DASHBOARD = "https://console.anthropic.com/settings/usage";
+const LOGIN_COOLDOWN_MS = 120000;
+let lastLoginLaunchAt = 0;
 
 interface ClaudeCredentials {
   accessToken: string;
@@ -12,8 +15,10 @@ interface ClaudeCredentials {
   rateLimitTier?: string;
 }
 
-async function readClaudeCredentials(): Promise<ClaudeCredentials | null> {
-  const raw = await getKeychainPassword('Claude Code-credentials');
+async function readClaudeCredentials(forceRefresh: boolean = false): Promise<ClaudeCredentials | null> {
+  const raw = forceRefresh
+    ? await getKeychainPassword('Claude Code-credentials', 0)
+    : await getKeychainPassword('Claude Code-credentials');
   if (!raw) return null;
   try {
     const data = JSON.parse(raw);
@@ -154,12 +159,65 @@ export class AnthropicProvider extends ProviderBase {
       if (result.data) {
         usage = formatUsage(result.data);
       } else if (result.isAuthError && creds.refreshToken) {
-        error = "Token expired, please run claude CLI to re-login";
+        // 自动登录流程
+        console.log(`[${this.name}] Token 失效，尝试自动登录...`);
+        const loginSuccess = await this.autoLogin();
+        if (loginSuccess) {
+          // 登录成功后重新读取凭证并获取数据
+          const newCreds = await readClaudeCredentials(true);
+          if (newCreds?.accessToken) {
+            const retryResult = await fetchUsage(newCreds.accessToken);
+            if (retryResult.data) {
+              usage = formatUsage(retryResult.data);
+              error = undefined;
+            }
+          }
+        }
+        if (!usage) {
+          if (loginSuccess) {
+            error = "Token expired. Login flow started in background; complete it and wait next refresh.";
+          } else {
+            error = "Token expired, auto-login failed";
+          }
+        }
       } else {
         error = "Failed to fetch usage";
       }
     } else {
-      statusLine = "Claude login not detected";
+      // 未检测到登录，尝试自动登录
+      console.log(`[${this.name}] 未检测到登录凭证，尝试自动登录...`);
+      const loginSuccess = await this.autoLogin();
+      if (loginSuccess) {
+        const newCreds = await readClaudeCredentials(true);
+        if (newCreds?.accessToken) {
+          const retryResult = await fetchUsage(newCreds.accessToken);
+          if (retryResult.data) {
+            usage = formatUsage(retryResult.data);
+            // 获取 profile 信息
+            const profile = await fetchProfile(newCreds.accessToken);
+            const subType = newCreds.subscriptionType || "unknown";
+            const subMap: Record<string, string> = {
+              "pro": "Claude Pro",
+              "free": "Claude Free",
+              "team": "Claude Team"
+            };
+            const planName = subMap[subType] || subType;
+            
+            if (profile.email) {
+              statusLine = `Logged in (${profile.email} - ${planName})`;
+            } else {
+              statusLine = `Logged in (${planName})`;
+            }
+          }
+        }
+      }
+      if (!usage) {
+        if (loginSuccess) {
+          statusLine = "Login flow started in background";
+        } else {
+          statusLine = "Claude login not detected";
+        }
+      }
     }
 
     if (!usage) {
@@ -176,5 +234,28 @@ export class AnthropicProvider extends ProviderBase {
       dashboard_url: this.dashboard_url,
       error
     };
+  }
+
+  async autoLogin(): Promise<boolean> {
+    if (Date.now() - lastLoginLaunchAt < LOGIN_COOLDOWN_MS) {
+      console.log(`[${this.name}] 登录流程已在后台启动，等待完成`);
+      return true;
+    }
+
+    console.log(`[${this.name}] 正在后台启动自动登录流程...`);
+    try {
+      const started = runDetachedCommand('claude');
+      if (started) {
+        lastLoginLaunchAt = Date.now();
+        console.log(`[${this.name}] 已在后台打开登录窗口`);
+        return true;
+      }
+
+      console.error(`[${this.name}] 自动登录失败 (无法启动登录命令)`);
+      return false;
+    } catch (error: any) {
+      console.error(`[${this.name}] 自动登录出错: ${error.message || error}`);
+      return false;
+    }
   }
 }
